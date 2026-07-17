@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pynput pyinstaller
-      - run: pyinstaller --onefile --windowed --name "Recorder-PRO" MacroRecorder.py
+      - run: pyinstaller --onefile --windowed --name "Recorder-PRO" --icon "robot.icns" MacroRecorder.py
       - uses: actions/upload-artifact@v4
         with:
           name: Recorder-PRO-Mac
@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pynput pyinstaller
-      - run: pyinstaller --onefile --noconsole --name "Recorder-PRO" MacroRecorder.py
+      - run: pyinstaller --onefile --noconsole --name "Recorder-PRO" --icon "robot.ico" MacroRecorder.py
       - uses: actions/upload-artifact@v4
         with:
           name: Recorder-PRO-Windows
