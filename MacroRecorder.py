@@ -11,6 +11,7 @@ USO:
 """
 
 import json
+import os
 import time
 import threading
 import tkinter as tk
@@ -34,6 +35,7 @@ from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
 
 HOTKEY_STOP = Key.esc
 MOVE_THROTTLE = 0.015
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".recorder_pro.json")
 
 # ---------- Paleta (morado) ----------
 BG      = "#1c0f33"
@@ -80,6 +82,7 @@ TEXTS = {
         "card_sched": "PROGRAMAR INICIO AUTOMATICO", "lbl_start_in": "Empezar dentro de:",
         "btn_schedule": "Programar", "btn_cancel": "Cancelar",
         "btn_save": "Guardar", "btn_load": "Cargar", "btn_clear": "Limpiar",
+        "btn_delete": "\U0001f5d1 Borrar grabacion",
         "footer": "Esc = detener la reproduccion",
         "howto_body": ("1. Elige tu tecla para GRABAR y tu tecla para REPRODUCIR.\n"
                        "2. Pulsa la tecla de grabar, haz tus acciones, pulsala otra vez para parar.\n"
@@ -125,6 +128,7 @@ TEXTS = {
         "card_sched": "SCHEDULE AUTO START", "lbl_start_in": "Start in:",
         "btn_schedule": "Schedule", "btn_cancel": "Cancel",
         "btn_save": "Save", "btn_load": "Load", "btn_clear": "Clear",
+        "btn_delete": "\U0001f5d1 Delete recording",
         "footer": "Esc = stop playback",
         "howto_body": ("1. Choose your RECORD key and your PLAY key.\n"
                        "2. Press the record key, do your actions, press it again to stop.\n"
@@ -166,19 +170,31 @@ def deserialize_key(d):
     return getattr(Key, d["v"])
 
 
+def key_sig(key):
+    """Firma normalizada de una tecla. Unifica las dos formas (char / vk)
+    en que Windows puede mandar una misma letra, para que siempre coincida."""
+    if key is None:
+        return None
+    if isinstance(key, Key):
+        return ("k", key.name)
+    ch = getattr(key, "char", None)
+    vk = getattr(key, "vk", None)
+    if ch:
+        return ("c", ch.lower())
+    if vk is not None:
+        if 65 <= vk <= 90:            # A-Z
+            return ("c", chr(vk).lower())
+        if 48 <= vk <= 57:            # 0-9
+            return ("c", chr(vk))
+        if 96 <= vk <= 105:           # teclado numerico 0-9
+            return ("c", chr(vk - 48))
+        return ("v", vk)
+    return ("r", repr(key))
+
+
 def keys_match(a, b):
-    if a is None or b is None:
-        return False
-    ca, cb = getattr(a, "char", None), getattr(b, "char", None)
-    if ca is not None and cb is not None:
-        return ca.lower() == cb.lower()
-    na, nb = getattr(a, "name", None), getattr(b, "name", None)
-    if na is not None and nb is not None:
-        return na == nb
-    va, vb = getattr(a, "vk", None), getattr(b, "vk", None)
-    if va is not None and vb is not None:
-        return va == vb
-    return a == b
+    sa = key_sig(a)
+    return sa is not None and sa == key_sig(b)
 
 
 def key_label(key):
@@ -207,7 +223,7 @@ class MacroRecorder:
     def __init__(self, root):
         self.root = root
         self.root.title("Recorder-PRO")
-        self.root.geometry("470x740")
+        self.root.geometry("470x620")
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
 
@@ -255,9 +271,14 @@ class MacroRecorder:
         self.counter_var = tk.StringVar(value="")
         self.time_var = tk.StringVar(value="")
         self.sched_var = tk.StringVar(value="")
+        self.dbg_var = tk.StringVar(value="diagnostico: pulsa una tecla")
+        self._dbg = "diagnostico: pulsa una tecla"
+
+        self._load_settings()
 
         self.body = None
         self._build_menu()
+        self._build_scaffold()
         self._build_ui()
 
         self.mouse_listener = mouse.Listener(
@@ -281,10 +302,36 @@ class MacroRecorder:
         if lang == self.lang:
             return
         self.lang = lang
+        self._save_settings()
         self._build_menu()
-        if self.body is not None:
-            self.body.destroy()
+        for w in self.body.winfo_children():
+            w.destroy()
         self._build_ui()
+
+    # ---------- Andamiaje con scroll ----------
+    def _build_scaffold(self):
+        outer = tk.Frame(self.root, bg=BG)
+        outer.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = tk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.body = tk.Frame(self.canvas, bg=BG)
+        self._body_win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+
+        def _on_body_config(e):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.body.bind("<Configure>", _on_body_config)
+
+        def _on_canvas_config(e):
+            self.canvas.itemconfig(self._body_win, width=e.width)
+        self.canvas.bind("<Configure>", _on_canvas_config)
+
+        def _on_wheel(e):
+            self.canvas.yview_scroll(int(-e.delta / 120), "units")
+        self.canvas.bind_all("<MouseWheel>", _on_wheel)
 
     # ---------- Menu ----------
     def _build_menu(self):
@@ -355,9 +402,6 @@ class MacroRecorder:
 
     # ---------- Interfaz ----------
     def _build_ui(self):
-        self.body = tk.Frame(self.root, bg=BG)
-        self.body.pack(fill="both", expand=True)
-
         # Cabecera
         header = tk.Frame(self.body, bg=HEADER)
         header.pack(fill="x")
@@ -370,7 +414,7 @@ class MacroRecorder:
 
         titles = tk.Frame(hrow, bg=HEADER)
         titles.pack(side="left", padx=12)
-        tk.Label(titles, text="Recorder-PRO", bg=HEADER, fg="white",
+        tk.Label(titles, text="Recorder-PRO  v2.1", bg=HEADER, fg="white",
                  font=("Segoe UI", 16, "bold")).pack(anchor="w")
         tk.Label(titles, text=self.t("subtitle"), bg=HEADER, fg=MUTED,
                  font=("Segoe UI", 9)).pack(anchor="w")
@@ -408,6 +452,13 @@ class MacroRecorder:
                                   relief="flat", bd=0, cursor="hand2", font=("Segoe UI", 11, "bold"),
                                   padx=6, pady=8)
         self.btn_play.grid(row=0, column=1, padx=5)
+
+        # Boton borrar grabacion
+        self.btn_delete = tk.Button(self.body, text=self.t("btn_delete"), command=self.clear_macro,
+                                    bg=BTN_BG, fg="white", activebackground=RED, activeforeground="white",
+                                    relief="flat", bd=0, cursor="hand2", font=("Segoe UI", 9, "bold"),
+                                    padx=6, pady=5)
+        self.btn_delete.pack(pady=(8, 2))
 
         # Tarjeta Teclas
         k = self._card(self.body, self.t("card_keys"))
@@ -485,7 +536,9 @@ class MacroRecorder:
                       font=("Segoe UI", 9), pady=5).pack(side="left", padx=4)
 
         tk.Label(self.body, text=self.t("footer"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="bottom", pady=8)
+                 font=("Segoe UI", 8)).pack(pady=10)
+        tk.Label(self.body, textvariable=self.dbg_var, bg=BG, fg="#7dd3fc",
+                 font=("Consolas", 8)).pack(pady=(0, 10))
 
     # ---------- Programar ----------
     def schedule_start(self):
@@ -522,6 +575,14 @@ class MacroRecorder:
         self._rec_kbd = self.kbd_var.get()
         self._keep_awake = self.awake_var.get()
 
+        # Procesar las teclas pulsadas (grabar / reproducir) en el hilo de la ventana
+        if self._req_record:
+            self._req_record = False
+            self.toggle_record()
+        if self._req_play:
+            self._req_play = False
+            self.toggle_play()
+
         scheduled = False
         if self._scheduled_at is not None and not self.playing and not self.recording and not self._capturing:
             remaining = self._scheduled_at - time.time()
@@ -538,6 +599,7 @@ class MacroRecorder:
         self.lbl_key_record.config(text=key_label(self.key_record))
         self.lbl_key_play.config(text=key_label(self.key_play))
         self.counter_var.set(self.t("counter", n=len(self.events)))
+        self.dbg_var.set(self._dbg)
 
         if self._capturing:
             self.status_var.set(self.t("press_key"))
@@ -556,12 +618,13 @@ class MacroRecorder:
             if scheduled:
                 self.status_var.set(self.t("scheduled"))
                 self.status_lbl.config(fg=GOLD)
+                self.time_var.set(self.t("starts_in", r=fmt_hms(remaining)))
             else:
                 self.status_var.set(self.t("ready"))
                 self.status_lbl.config(fg=TEXT)
+                self._update_estimate()
             self.btn_record.config(text=self.t("btn_record"))
             self.btn_play.config(text=self.t("btn_play"))
-            self._update_estimate()
 
         self.root.after(150, self._refresh_ui)
 
@@ -665,12 +728,19 @@ class MacroRecorder:
 
     def _on_press(self, key):
         try:
+            try:
+                self._dbg = (f"tecla: {key_label(key)}  |  "
+                             f"=grabar? {keys_match(key, self.key_record)}  |  "
+                             f"=reprod? {keys_match(key, self.key_play)}")
+            except Exception:
+                pass
             if self._capturing:
                 if self._capturing == "record":
                     self.key_record = key
                 else:
                     self.key_play = key
                 self._capturing = None
+                self._save_settings()
                 return
             if keys_match(key, self.key_record):
                 self._req_record = True
@@ -827,9 +897,51 @@ class MacroRecorder:
     def clear_macro(self):
         if self.recording or self.playing:
             return
-        self.events = []
+        if not self.events:
+            return
+        if messagebox.askyesno("Recorder-PRO", "Borrar la grabacion actual? / Delete current recording?"):
+            self.events = []
+
+    # ---------- Ajustes (recordar teclas e idioma) ----------
+    def _load_settings(self):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("lang") in ("es", "en"):
+                self.lang = data["lang"]
+            if "key_record" in data:
+                self.key_record = deserialize_key(data["key_record"])
+            if "key_play" in data:
+                self.key_play = deserialize_key(data["key_play"])
+            if "kbd" in data:
+                self.kbd_var.set(bool(data["kbd"]))
+            if "moves" in data:
+                self.moves_var.set(bool(data["moves"]))
+            if "sound" in data and HAS_SOUND:
+                self.sound_var.set(bool(data["sound"]))
+            if "awake" in data:
+                self.awake_var.set(bool(data["awake"]))
+        except Exception:
+            pass  # Si no hay ajustes o falla, se usan los valores por defecto
+
+    def _save_settings(self):
+        try:
+            data = {
+                "lang": self.lang,
+                "key_record": serialize_key(self.key_record),
+                "key_play": serialize_key(self.key_play),
+                "kbd": bool(self.kbd_var.get()),
+                "moves": bool(self.moves_var.get()),
+                "sound": bool(self.sound_var.get()),
+                "awake": bool(self.awake_var.get()),
+            }
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
 
     def _on_close(self):
+        self._save_settings()
         self.stop_flag.set()
         try:
             self.mouse_listener.stop()
