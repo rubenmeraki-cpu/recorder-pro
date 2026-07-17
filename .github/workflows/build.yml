@@ -1,0 +1,35 @@
+name: Compilar Recorder-PRO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pynput pyinstaller
+      - run: pyinstaller --onefile --windowed --name "Recorder-PRO" MacroRecorder.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Recorder-PRO-Mac
+          path: dist/Recorder-PRO.app
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pynput pyinstaller
+      - run: pyinstaller --onefile --noconsole --name "Recorder-PRO" MacroRecorder.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Recorder-PRO-Windows
+          path: dist/Recorder-PRO.exe
